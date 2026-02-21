@@ -5,8 +5,6 @@ functiongemma_path = "cactus/weights/functiongemma-270m-it"
 
 import json, os, time
 from cactus import cactus_init, cactus_complete, cactus_destroy
-from google import genai
-from google.genai import types
 
 # Global model instance to optimize latency over multiple calls
 _cactus_model = None
@@ -109,6 +107,9 @@ def generate_cactus(messages, tools):
 
 def generate_cloud(messages, tools):
     """Run function calling via Gemini Cloud API."""
+    from google import genai
+    from google.genai import types
+    
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
         return {"function_calls": [], "total_time_ms": 0, "error": "Missing GEMINI_API_KEY"}
