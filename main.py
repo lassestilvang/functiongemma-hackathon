@@ -393,13 +393,16 @@ def extract_all_intents(text, tools):
     # --- WEATHER ---
     if ("get_weather" in tool_names) and "weather" in lp:
         # Match multi-word city names (e.g., Cape Town, San Francisco, New York)
-        m = re.search(r'(?:in|for)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', orig)
+        # IMPORTANT: Only look for location AFTER the word 'weather' to avoid
+        # picking up names from other intents (e.g. "Search for Omar and check weather in Dubai")
+        weather_pos = lp.find("weather")
+        weather_context = orig[max(0, weather_pos - 10):] if weather_pos >= 0 else orig
+        m = re.search(r'(?:in|for)\s+([A-Z][a-z]+(?:\s+[A-Z][a-z]+)*)', weather_context)
         if not m:
-            # Fallback: grab words after in/for until a stop word
-            m = re.search(r'(?:in|for)\s+([a-z]+(?:\s+[a-z]+)?)', lp)
+            weather_context_lp = lp[max(0, weather_pos - 10):] if weather_pos >= 0 else lp
+            m = re.search(r'(?:in|for)\s+([a-z]+(?:\s+[a-z]+)?)', weather_context_lp)
         if m:
             loc = m.group(1).strip().rstrip(string.punctuation)
-            # Title-case for consistency
             calls.append({"name": "get_weather", "arguments": {"location": loc.title()}})
 
     # --- PLAY MUSIC ---
@@ -419,37 +422,38 @@ def extract_all_intents(text, tools):
 
     # --- SEND MESSAGE ---
     if ("send_message" in tool_names) and ("message" in lp or "text" in lp.split()[0:1] or "text " in lp or "texting" in lp):
-        # Extract recipient - look for a proper name directly associated with "to" or "text"
-        # Use IGNORECASE for the keyword, but then verify the match is a proper name
         recipient_name = None
         
-        # First try: direct "text/message to <Name>" pattern
+        # First try: "message to <Name>" or "text <Name>" (case-sensitive on name)
         m_rec = re.search(r'(?:message\s+to|text)\s+([A-Z][a-z]+)', orig)
         if m_rec:
             candidate = m_rec.group(1).strip()
-            if candidate.lower() not in ("him", "her", "them", "a", "the", "me", "my", "saying"):
+            if candidate.lower() not in ("him", "her", "them", "a", "the", "me", "my", "saying", "message"):
                 recipient_name = candidate
         
-        # Second try: case-insensitive for sentence-initial "Text Dave"
+        # Second try: "message <Name>" or "send <Name>" (case-insensitive keyword)
         if not recipient_name:
-            m_rec = re.search(r'(?:^|\b)text\s+([A-Z][a-z]+)', orig, re.IGNORECASE)
+            m_rec = re.search(r'(?:^|\b)(?:message|text|send)\s+([A-Z][a-z]+)', orig, re.IGNORECASE)
             if m_rec:
                 candidate = m_rec.group(1).strip()
-                if candidate.lower() not in ("him", "her", "them", "a", "the", "me", "my", "saying"):
+                if candidate.lower() not in ("him", "her", "them", "a", "the", "me", "my", "saying", "message", "an"):
                     recipient_name = candidate.title()
         
-        # Third try: "send <pronoun> a message" → resolve name from context
+        # Third try: resolve name from context ("send him a message" → find name elsewhere) 
         if not recipient_name:
             all_names = re.findall(r'\b([A-Z][a-z]+)\b', orig)
             stop_words = {"Set", "Send", "Find", "Look", "Get", "Check", "Play", "Text",
                           "What", "How", "The", "And", "Remind", "Wake", "Saying",
-                          "AM", "PM", "In", "My", "For", "Him", "Her"}
-            names = [n for n in all_names if n not in stop_words]
+                          "Message", "AM", "PM", "In", "My", "For", "Him", "Her",
+                          "Search", "Alarm", "Timer", "Weather", "Music", "Contacts"}
+            # Also exclude any city names we already extracted for weather
+            weather_locs = {c["arguments"]["location"] for c in calls if c["name"] == "get_weather"}
+            names = [n for n in all_names if n not in stop_words and n not in weather_locs]
             if names:
                 recipient_name = names[0]
         
-        # Extract message content
-        m_msg = re.search(r'saying\s+(.*?)(?:\s+and\s+(?:check|get|set|find|look|search|remind)|,\s*(?:check|get|set|find)|$)', lp)
+        # Extract message content — trim at intent boundaries
+        m_msg = re.search(r'saying\s+(.*?)(?:\s+and\s+(?:check|get|set|find|look|search|remind|play|wake)|,\s*(?:check|get|set|find|play|remind)|$)', lp)
         if not m_msg:
             m_msg = re.search(r'saying\s+(.*)', lp)
         if recipient_name and m_msg:
