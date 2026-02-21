@@ -8,9 +8,6 @@ from cactus import cactus_init, cactus_complete, cactus_destroy
 from google import genai
 from google.genai import types
 
-import sys
-sys.path.append("/Users/lasse/Sites/functiongemma-hackathon/cactus/venv/lib/python3.12/site-packages")
-
 # Global model instance to optimize latency over multiple calls
 _cactus_model = None
 
