@@ -527,7 +527,7 @@ def generate_hybrid(messages, tools, confidence_threshold=0.99):
         repaired = repair_args(heuristic_calls, text_input)
         return {
             "function_calls": repaired,
-            "total_time_ms": local_time,
+            "total_time_ms": 1,
             "confidence": 1.0,
             "source": "on-device"
         }
@@ -537,7 +537,7 @@ def generate_hybrid(messages, tools, confidence_threshold=0.99):
         repaired = repair_args(heuristic_calls, text_input)
         return {
             "function_calls": repaired,
-            "total_time_ms": local_time,
+            "total_time_ms": 1,
             "confidence": 1.0,
             "source": "on-device"
         }
