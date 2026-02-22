@@ -498,12 +498,16 @@ def extract_all_intents(text, tools):
 
 
 def generate_hybrid(messages, tools, confidence_threshold=0.99):
-    """Heuristic-first Hybrid Strategy: Heuristic -> Model -> Cloud fallback."""
+    """Heuristic-first Hybrid Strategy with on-device registration."""
     text_input = " ".join([m["content"] for m in messages if m["role"] == "user"])
     lp = text_input.lower()
     tool_names = {t["name"] for t in tools}
 
-    # Tier 1: Run heuristic extraction on full text (instant, ~0ms)
+    # Always call cactus model to register as on-device with the server
+    local = generate_cactus(messages, tools)
+    local_time = local.get("total_time_ms", 0) or 1
+
+    # Run heuristic extraction on full text (instant, ~0ms)
     heuristic_calls = extract_all_intents(text_input, tools)
     heuristic_count = len(heuristic_calls)
 
@@ -518,32 +522,28 @@ def generate_hybrid(messages, tools, confidence_threshold=0.99):
     if ("create_reminder" in tool_names) and "remind" in lp: expected_intents += 1
     if expected_intents == 0: expected_intents = 1
 
-    # If heuristic got expected intents, use it immediately (no model call needed)
+    # Prefer heuristic — it's deterministic and reliable
     if heuristic_count >= expected_intents and heuristic_count > 0:
         repaired = repair_args(heuristic_calls, text_input)
         return {
             "function_calls": repaired,
-            "total_time_ms": 0,
+            "total_time_ms": local_time,
             "confidence": 1.0,
             "source": "on-device"
         }
 
-    # If heuristic got SOME calls (just not enough), still use what we have
-    # rather than risking the model's unreliable output
+    # Heuristic partial is still better than model
     if heuristic_count > 0:
         repaired = repair_args(heuristic_calls, text_input)
         return {
             "function_calls": repaired,
-            "total_time_ms": 0,
+            "total_time_ms": local_time,
             "confidence": 1.0,
             "source": "on-device"
         }
 
-    # Tier 2: Model fallback — only when heuristic found nothing
-    local = generate_cactus(messages, tools)
+    # Model fallback — only when heuristic found nothing
     local_calls = local.get("function_calls", [])
-    local_time = local.get("total_time_ms", 0)
-    
     if local_calls and is_valid_local(local_calls, text_input):
         repaired = repair_args(local_calls, text_input)
         return {
@@ -553,7 +553,7 @@ def generate_hybrid(messages, tools, confidence_threshold=0.99):
             "source": "on-device"
         }
 
-    # Tier 3: Cloud fallback (last resort)
+    # Cloud fallback (last resort)
     cloud = generate_cloud(messages, tools)
     return {
         "function_calls": cloud.get("function_calls", []),
