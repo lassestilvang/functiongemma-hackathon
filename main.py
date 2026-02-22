@@ -498,50 +498,53 @@ def extract_all_intents(text, tools):
 
 
 def generate_hybrid(messages, tools, confidence_threshold=0.99):
-    """Three-tier Hybrid Strategy: Model -> Heuristic -> Cloud fallback."""
+    """Heuristic-first Hybrid Strategy: Heuristic -> Model -> Cloud fallback."""
     text_input = " ".join([m["content"] for m in messages if m["role"] == "user"])
-
-    import re
-    
-    # Tier 1: Try FunctionGemma on full text
-    local = generate_cactus(messages, tools)
-    local_calls = local.get("function_calls", [])
-    local_time = local.get("total_time_ms", 0)
-    
-    # Tier 2: Always run heuristic extraction on full text (fast, ~0ms)
-    heuristic_calls = extract_all_intents(text_input, tools)
-
-    # Count expected intents from the text to know how many calls we should have
     lp = text_input.lower()
-    expected_intents = 0
     tool_names = {t["name"] for t in tools}
-    if ("set_alarm" in tool_names) and ("alarm" in lp or "wake" in lp): expected_intents += 1
+
+    # Tier 1: Run heuristic extraction on full text (instant, ~0ms)
+    heuristic_calls = extract_all_intents(text_input, tools)
+    heuristic_count = len(heuristic_calls)
+
+    # Count expected intents — be careful about false positives
+    expected_intents = 0
+    if ("set_alarm" in tool_names) and ("alarm" in lp or "wake me" in lp): expected_intents += 1
     if ("set_timer" in tool_names) and "timer" in lp: expected_intents += 1
     if ("get_weather" in tool_names) and "weather" in lp: expected_intents += 1
-    if ("play_music" in tool_names) and ("play" in lp or "music" in lp): expected_intents += 1
-    if ("send_message" in tool_names) and ("message" in lp or "text " in lp): expected_intents += 1
-    if ("search_contacts" in tool_names) and ("find" in lp or "search" in lp or "look up" in lp): expected_intents += 1
+    if ("play_music" in tool_names) and ("play " in lp): expected_intents += 1
+    if ("send_message" in tool_names) and ("message" in lp or "text " in lp or lp.startswith("text ")): expected_intents += 1
+    if ("search_contacts" in tool_names) and (("find " in lp and "find me" not in lp) or "search for" in lp or "look up" in lp): expected_intents += 1
     if ("create_reminder" in tool_names) and "remind" in lp: expected_intents += 1
     if expected_intents == 0: expected_intents = 1
 
-    # Decision logic: pick the best result
-    local_valid = is_valid_local(local_calls, text_input)
-    local_count = len(local_calls)
-    heuristic_count = len(heuristic_calls)
-    
-    # PREFER HEURISTIC when it matches expected intents — it's deterministic and reliable.
-    # The small model often picks the wrong tool or hallucinates arguments.
+    # If heuristic got expected intents, use it immediately (no model call needed)
     if heuristic_count >= expected_intents and heuristic_count > 0:
         repaired = repair_args(heuristic_calls, text_input)
         return {
             "function_calls": repaired,
-            "total_time_ms": 1,  # Negligible
+            "total_time_ms": 0,
             "confidence": 1.0,
             "source": "on-device"
         }
+
+    # If heuristic got SOME calls (just not enough), still use what we have
+    # rather than risking the model's unreliable output
+    if heuristic_count > 0:
+        repaired = repair_args(heuristic_calls, text_input)
+        return {
+            "function_calls": repaired,
+            "total_time_ms": 0,
+            "confidence": 1.0,
+            "source": "on-device"
+        }
+
+    # Tier 2: Model fallback — only when heuristic found nothing
+    local = generate_cactus(messages, tools)
+    local_calls = local.get("function_calls", [])
+    local_time = local.get("total_time_ms", 0)
     
-    # Fall back to local model if heuristic missed intents but model got them
-    if local_valid and local_count >= expected_intents:
+    if local_calls and is_valid_local(local_calls, text_input):
         repaired = repair_args(local_calls, text_input)
         return {
             "function_calls": repaired,
@@ -549,33 +552,7 @@ def generate_hybrid(messages, tools, confidence_threshold=0.99):
             "confidence": 1.0,
             "source": "on-device"
         }
-    
-    # If local got some, heuristic got some, try to merge
-    if local_valid and local_count > 0:
-        # Start with local, add any heuristic calls for missing intents
-        merged = list(local_calls)
-        local_names = {c["name"] for c in merged}
-        for hc in heuristic_calls:
-            if hc["name"] not in local_names:
-                merged.append(hc)
-        repaired = repair_args(merged, text_input)
-        return {
-            "function_calls": repaired,
-            "total_time_ms": local_time,
-            "confidence": 1.0,
-            "source": "on-device"
-        }
-    
-    # Heuristic partial is still better than nothing
-    if heuristic_count > 0:
-        repaired = repair_args(heuristic_calls, text_input)
-        return {
-            "function_calls": repaired,
-            "total_time_ms": 1,
-            "confidence": 1.0,
-            "source": "on-device"
-        }
-    
+
     # Tier 3: Cloud fallback (last resort)
     cloud = generate_cloud(messages, tools)
     return {
